@@ -48,10 +48,6 @@ This repository contains the code, data, and results accompanying the paper 'Ben
 │
 ├── active_learning_PCE_Prediction.csv          # Scopus literature-search export used for the paper's literature review
 ├── larger_active_learning_literature_review.csv # Extended Scopus literature-search export
-├── paper_draft.md                        # Full manuscript draft (title, abstract, methods, results, references)
-├── fchem-09-800371.pdf                   # Reference PDF (background reading, not used by the code)
-├── prajwalp_finalReport.pdf              # Reference PDF (background reading, not used by the code)
-│
 └── al_results/                           # All pipeline outputs (committed so results can be inspected without re-running)
     ├── al_results.json                   # Raw numeric results: discovery/best-PCE/calibration curves per representation per seed
     ├── pce_histogram.png                 # Figure 1 — PCE distribution of the 1,481-molecule dataset
