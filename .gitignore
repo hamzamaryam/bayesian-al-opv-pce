@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# ML artifacts (uncomment if you don't want to publish these)
+# *.pkl
+# *.pt
+# *.h5
+# *.ckpt
+# runs/
+# wandb/
+# mlruns/
+
+# OS / editor junk
+.DS_Store
+.vscode/
+.idea/
+*.swp
