@@ -1,4 +1,4 @@
-# <PAPER TITLE HERE>
+# Benchmarking Molecular Representations in Bayesian Active Learning for Accelerated Discovery of High-Efficiency Organic Solar Cells
 
 ## Overview
 
