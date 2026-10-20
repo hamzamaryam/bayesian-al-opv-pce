@@ -7,7 +7,7 @@ Bayesian Active Learning benchmark for OSC PCE discovery.
 Benchmarks 8 molecular fingerprint representations + a GCN baseline within
 a unified GPR + Expected Improvement (EI) active learning loop.
 
-Dataset  : Combined_df.csv  (1,481 molecules, SMILES + PCE)
+Dataset  : data/processed/Combined_df.csv  (1,481 molecules, SMILES + PCE)
 Paper    : "Benchmarking Molecular Representations in Bayesian Active Learning
             for Accelerated Discovery of High-Efficiency Organic Solar Cells"
 
@@ -76,12 +76,14 @@ warnings.filterwarnings("ignore", category=UserWarning)
 # ==============================================================================
 # SECTION 2 – CONFIGURATION
 # ==============================================================================
-DATA_DIR = Path(__file__).parent
+REPO_ROOT = Path(__file__).resolve().parent.parent   # scripts live in src/
+DATA_DIR = REPO_ROOT / "data"
+FEATURES_DIR = DATA_DIR / "features"
 
 CONFIG = {
     # ---- paths ----
-    "data_file":    DATA_DIR / "Combined_df.csv",
-    "results_dir":  DATA_DIR / "al_results",
+    "data_file":    DATA_DIR / "processed" / "Combined_df.csv",
+    "results_dir":  REPO_ROOT / "results",
     "smiles_col":   "SMILES",
     "target_col":   "PCE",
 
@@ -828,7 +830,7 @@ def plot_discovery_curves(all_results: dict, results_dir: Path):
     axes[0].axhline(y=1.0, color="gray", ls=":", lw=1)
 
     plt.tight_layout()
-    path = results_dir / "discovery_curves.png"
+    path = results_dir / "figures" / "discovery_curves.png"
     plt.savefig(path, dpi=700, bbox_inches="tight")
     plt.close()
     print(f"Discovery plot saved → {path}")
@@ -864,7 +866,7 @@ def plot_calibration_curves(all_results: dict, results_dir: Path):
     ax.legend(fontsize=9)
     ax.grid(True, alpha=0.25)
     plt.tight_layout()
-    path = results_dir / "calibration_curves.png"
+    path = results_dir / "figures" / "calibration_curves.png"
     plt.savefig(path, dpi=700, bbox_inches="tight")
     plt.close()
     print(f"Calibration plot saved → {path}")
@@ -882,7 +884,7 @@ def plot_pce_histogram(y_full: np.ndarray, results_dir: Path):
     ax.legend(fontsize=8)
     #### ax.grid(True, alpha=0.25)
     plt.tight_layout()
-    path = results_dir / "pce_histogram.png"
+    path = results_dir / "figures" / "pce_histogram.png"
     plt.savefig(path, dpi=700, bbox_inches="tight")
     plt.close()
     print(f"PCE histogram saved → {path}")
@@ -927,6 +929,7 @@ def main():
     fp_cache_dir: Path = results_dir / "fp_cache"
     results_dir.mkdir(parents=True, exist_ok=True)
     fp_cache_dir.mkdir(exist_ok=True)
+    (results_dir / "figures").mkdir(exist_ok=True)
 
     # ------------------------------------------------------------------
     # 11.1  Load dataset
@@ -967,7 +970,7 @@ def main():
             fingerprint_arrays[fp_name] = X
             continue
 
-        csv_path = DATA_DIR / fp_cfg.get("csv_file", "")
+        csv_path = FEATURES_DIR / fp_cfg.get("csv_file", "")
         if fp_cfg.get("csv_file") and csv_path.exists():
             print(f"\n[{fp_name}]  loading from precomputed CSV …")
             t0 = time.time()

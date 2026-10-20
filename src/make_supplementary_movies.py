@@ -23,7 +23,7 @@ Reference movies play at 1.67 fps, 1440 x 936 px:
   - Supplementary_Movie_1.mp4 :  60 iterations (~36 s)
   - Supplementary_Movie_2.mp4 : 200 iterations (~120 s)
 
-Outputs are written to al_results/ so the original supplementary movies
+Outputs are written to results/ so the original supplementary movies
 in the project root are never overwritten.
 
 Usage
@@ -51,7 +51,7 @@ import active_learning_benchmark_700dpi as bench
 # ==============================================================================
 # CONFIGURATION
 # ==============================================================================
-DATA_DIR    = Path(__file__).parent
+DATA_DIR    = Path(__file__).resolve().parent.parent / "data"
 RESULTS_DIR = bench.CONFIG["results_dir"]
 
 # Seven representations → 2x4 layout
@@ -132,7 +132,7 @@ def run_gpr_al_with_history(X_full, y_full, n_iterations, seed, rep_name):
 def get_histories(rep_names, fingerprint_arrays, y_full, n_iterations, seed):
     """
     Run (or load cached) AL selection histories for every representation.
-    Cached to al_results/movie_histories_seed{seed}.json; reused as long
+    Cached to results/movie_histories_seed{seed}.json; reused as long
     as the cache holds at least n_iterations iterations per rep.
     """
     cache_path = RESULTS_DIR / f"movie_histories_seed{seed}.json"
