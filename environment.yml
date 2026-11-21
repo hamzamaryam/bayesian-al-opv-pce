@@ -280,4 +280,3 @@ dependencies:
       - wrapt==1.17.2
       - xarray==2024.9.0
       - yarl==1.11.1
-prefix: /home/hamza/anaconda3/envs/active_learning
