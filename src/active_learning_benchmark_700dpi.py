@@ -1,23 +1,45 @@
 #!/usr/bin/env python
 """
-active_learning_benchmark.py
-==============================
+active_learning_benchmark_700dpi.py   (canonical pipeline script)
+====================================
 Bayesian Active Learning benchmark for OSC PCE discovery.
 
-Benchmarks 8 molecular fingerprint representations + a GCN baseline within
-a unified GPR + Expected Improvement (EI) active learning loop.
+* 8 handcrafted representations (RDKit, Mordred, MACCS, Avalon, Morgan,
+  Extended, APF, PF) are each coupled to the SAME GPR surrogate
+  (Constant x RBF + White kernel) and Expected Improvement (EI) acquisition.
+* The GCN baseline does NOT use a GPR and its embeddings are NOT passed to a
+  GPR: the GCN is trained end-to-end and its predictive mean / uncertainty
+  come from MC-Dropout (15 stochastic passes). These are plugged into the
+  same EI formula, with the same xi, seed sets and query budget.
+
+Representations actually used (= data/features/*.csv, see notebooks/
+Active_Learning_Data_Generation.ipynb and src/verify_features.py):
+    Morgan   : Morgan radius 1 (ECFP2-type), 2048 bits
+    Extended : Morgan radius 2 (ECFP4-type), 2048 bits
+    Avalon   : 512-bit hashed SUBSTRUCTURE fingerprint (not circular)
+    APF      : RDKit atom-pair generator, 4096 bits
+    PF       : RDKit PatternFingerprint (SMARTS substructure patterns), 2048 bits
+    MACCS    : 167 keys;  RDKit: 210 descriptors (explicit H);  Mordred: 1826
+The precomputed CSVs are loaded when present; the compute_* functions below
+are a fallback and have been aligned with these settings.
+
+"High-efficiency pool" = PCE > 12 % = 370 of 1,481 molecules (top 25 %).
+(Earlier versions mislabelled this pool "top-10 %".)
 
 Dataset  : data/processed/Combined_df.csv  (1,481 molecules, SMILES + PCE)
-Paper    : "Benchmarking Molecular Representations in Bayesian Active Learning
-            for Accelerated Discovery of High-Efficiency Organic Solar Cells"
+Paper    : "Circular fingerprints outpace learned graph representations in
+            active-learning discovery of organic semiconductor materials"
+Parameters: config/benchmark_config.json (overrides the CONFIG defaults below)
 
 Issues addressed vs. individual notebooks
 ------------------------------------------
-  - DtypeWarning in avalon_combined.csv           → recompute from SMILES via pyAvalonTools
+  - DtypeWarning in avalon_combined.csv           → read with low_memory=False
   - mordred Missing/error descriptor values        → coerce to numeric + fillna(0)
   - float32 overflow in descriptor matrices        → explicit clipping before GPR
-  - GPR kernel crash on high-dimensional inputs   → PCA (≤ 50 components, 95 % var)
-  - correlation filter too slow for large FPs      → only applied to FPs with < 300 features
+  - GPR kernel crash on high-dimensional inputs   → PCA (95 % var, CAPPED at 50 components;
+                                                    the cap means APF/Avalon/PF retain < 95 %)
+  - correlation filter too slow for large FPs      → only applied to FPs with ≤ 300 features
+                                                    after the variance filter (RDKit, MACCS)
   - GCN notebook was incomplete / not trained      → full training loop + MC-Dropout EI
   - no systematic multi-rep comparison             → unified evaluation with fixed seeds
   - repeated computation on re-runs                → cache preprocessed arrays to disk
@@ -53,6 +75,8 @@ plt.rcParams["figure.dpi"]     = 100  # on-screen / figure rendering dpi
 from rdkit import Chem, RDLogger
 from rdkit.Chem import Descriptors, MACCSkeys, AllChem
 from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdFingerprintGenerator
+from rdkit.Chem.rdmolops import PatternFingerprint
 from rdkit.ML.Descriptors import MoleculeDescriptors
 from rdkit.Avalon import pyAvalonTools            # confirmed available
 
@@ -97,7 +121,7 @@ CONFIG = {
     "target_col":   "PCE",
 
     # ---- dataset / evaluation ----
-    "top_k_threshold": 12.0,      # PCE > 12 % → "top-10 %" of 1 481 molecules
+    "top_k_threshold": 12.0,      # PCE > 12 % → high-efficiency pool: 370 of 1,481 (top 25 %)
     "n_seed":          10,         # initial labeled seed molecules
     "n_iterations":    100,        # AL iterations per run
     "n_random_seeds":  5,          # independent experimental repeats
@@ -112,12 +136,18 @@ CONFIG = {
     "gpr_n_restarts":  5,
     "gpr_alpha":       1e-6,       # nugget for numerical stability
     "ei_jitter":       0.01,       # ξ in EI formula
+    "gpr_random_state": None,      # None reproduces the paper's runs (unseeded optimizer
+                                   # restarts); set an int for bit-reproducible reruns
+    "log_gpr_kernel":  True,       # store fitted kernel hyperparameters per iteration
 
-    # ---- fingerprint settings ----
-    "morgan_radius":   2,
+    # ---- fingerprint settings (match data/features/*.csv used for the paper) ----
+    "morgan_radius":   1,          # "Morgan"   = Morgan radius 1 (ECFP2-type)
     "morgan_n_bits":   2048,
-    "avalon_n_bits":   512,
-    "fp_n_bits":       2048,       # APF / PF / Extended shared size
+    "extended_radius": 2,          # "Extended" = Morgan radius 2 (ECFP4-type)
+    "extended_n_bits": 2048,
+    "avalon_n_bits":   512,        # Avalon: hashed substructure FP (NOT circular)
+    "apf_n_bits":      4096,       # RDKit atom-pair generator
+    "pf_n_bits":       2048,       # RDKit PatternFingerprint (substructure patterns)
 
     # ---- GCN ----
     "gcn_hidden_dim":  64,
@@ -130,6 +160,15 @@ CONFIG = {
     # ---- reproducibility ----
     "global_seed": 42,
 }
+
+# Machine-readable parameter file (single source of truth for the paper's settings).
+CONFIG_FILE = REPO_ROOT / "config" / "benchmark_config.json"
+if CONFIG_FILE.exists():
+    _params = json.loads(CONFIG_FILE.read_text())["parameters"]
+    _unknown = set(_params) - set(CONFIG)
+    if _unknown:
+        raise KeyError(f"Unknown keys in {CONFIG_FILE}: {sorted(_unknown)}")
+    CONFIG.update(_params)
 
 # Atom types observed in the full 1 481-molecule dataset
 ATOM_TYPES = ["Al", "B", "Br", "C", "Cl", "F", "Ge", "I",
@@ -174,14 +213,16 @@ def _fp_to_df(rows, prefix, n_bits):
 
 
 def compute_rdkit_descriptors(smiles_list: list) -> pd.DataFrame:
-    """2-D RDKit physicochemical descriptors (~200 features after filtering)."""
+    """All 2-D RDKit descriptors (210 in RDKit 2024.03), computed on
+    hydrogen-explicit molecules exactly as in the data-generation notebook."""
     desc_names = [d[0] for d in Descriptors.descList]
     calc = MoleculeDescriptors.MolecularDescriptorCalculator(desc_names)
     rows = []
     for smi in smiles_list:
         mol = mol_from_smiles(smi)
         try:
-            rows.append(list(calc.CalcDescriptors(mol)) if mol else [np.nan] * len(desc_names))
+            rows.append(list(calc.CalcDescriptors(Chem.AddHs(mol))) if mol
+                        else [np.nan] * len(desc_names))
         except Exception:
             rows.append([np.nan] * len(desc_names))
     return pd.DataFrame(rows, columns=desc_names)
@@ -199,8 +240,8 @@ def compute_maccs_keys(smiles_list: list) -> pd.DataFrame:
     return _fp_to_df(rows, "MACCS", 167)
 
 
-def compute_morgan(smiles_list: list, radius: int = 2, n_bits: int = 2048) -> pd.DataFrame:
-    """Morgan circular fingerprint (ECFP4-equivalent)."""
+def compute_morgan(smiles_list: list, radius: int = 1, n_bits: int = 2048) -> pd.DataFrame:
+    """Morgan circular fingerprint; radius 1 (ECFP2-type) as used for "Morgan"."""
     rows = []
     for smi in smiles_list:
         mol = mol_from_smiles(smi)
@@ -212,34 +253,37 @@ def compute_morgan(smiles_list: list, radius: int = 2, n_bits: int = 2048) -> pd
     return _fp_to_df(rows, "Morgan", n_bits)
 
 
-def compute_atom_pair_fp(smiles_list: list, n_bits: int = 2048) -> pd.DataFrame:
-    """Atom-pair fingerprint – encodes atom-pair topology + distance."""
+def compute_atom_pair_fp(smiles_list: list, n_bits: int = 4096) -> pd.DataFrame:
+    """Atom-pair fingerprint (RDKit atom-pair generator, 4096 bits as used in the paper)."""
+    gen = rdFingerprintGenerator.GetAtomPairGenerator(fpSize=n_bits)
     rows = []
     for smi in smiles_list:
         mol = mol_from_smiles(smi)
         try:
-            fp = AllChem.GetHashedAtomPairFingerprintAsBitVect(mol, nBits=n_bits) if mol else None
+            fp = gen.GetFingerprint(mol) if mol else None
             rows.append(list(fp) if fp else [0] * n_bits)
         except Exception:
             rows.append([0] * n_bits)
     return _fp_to_df(rows, "APF", n_bits)
 
 
-def compute_path_fp(smiles_list: list, n_bits: int = 2048) -> pd.DataFrame:
-    """RDKit path-based (topological) fingerprint."""
+def compute_pattern_fp(smiles_list: list, n_bits: int = 2048) -> pd.DataFrame:
+    """RDKit PatternFingerprint ("PF"): substructure-screening fingerprint built
+    from generic SMARTS patterns. (Not a path-based RDKFingerprint.)"""
     rows = []
     for smi in smiles_list:
         mol = mol_from_smiles(smi)
         try:
-            fp = Chem.RDKFingerprint(mol, fpSize=n_bits) if mol else None
+            fp = PatternFingerprint(mol, fpSize=n_bits) if mol else None
             rows.append(list(fp) if fp else [0] * n_bits)
         except Exception:
             rows.append([0] * n_bits)
     return _fp_to_df(rows, "PF", n_bits)
 
 
-def compute_extended_fp(smiles_list: list, radius: int = 3, n_bits: int = 2048) -> pd.DataFrame:
-    """Extended Morgan fingerprint at radius-3 (broader neighbourhood)."""
+def compute_extended_fp(smiles_list: list, radius: int = 2, n_bits: int = 2048) -> pd.DataFrame:
+    """"Extended" = Morgan fingerprint at radius 2 (ECFP4-type): the larger
+    neighbourhood relative to the radius-1 "Morgan" entry."""
     rows = []
     for smi in smiles_list:
         mol = mol_from_smiles(smi)
@@ -253,11 +297,9 @@ def compute_extended_fp(smiles_list: list, radius: int = 3, n_bits: int = 2048) 
 
 def compute_avalon_fp(smiles_list: list, n_bits: int = 512) -> pd.DataFrame:
     """
-    Avalon fingerprint via pyAvalonTools.
-
-    This recomputes from SMILES directly, avoiding the DtypeWarning that
-    arises when loading the pre-computed avalon_combined.csv (which mixes
-    string SMILES and integer bit columns with no explicit dtype).
+    Avalon fingerprint via pyAvalonTools: a 512-bit HASHED SUBSTRUCTURE
+    fingerprint (atoms, bonds, rings, short paths). It is not circular.
+    Used only if data/features/avalon_combined.csv is absent.
     """
     rows = []
     for smi in smiles_list:
@@ -272,12 +314,13 @@ def compute_avalon_fp(smiles_list: list, n_bits: int = 512) -> pd.DataFrame:
 
 def compute_mordred_descriptors(smiles_list: list) -> pd.DataFrame:
     """
-    Mordred 2-D descriptor set (~1 600+ features).
-
-    mordred returns 'mordred.error.Missing' objects for failed descriptors.
-    These are coerced to NaN in to_float32_safe() and then filled with 0.
+    Mordred descriptor set (1,826 columns), computed as in the notebook with
+    ignore_3D=False but without 3-D conformers, so 3-D descriptors are
+    'Missing'. Missing values are coerced to NaN in to_float32_safe(), filled
+    with 0, and the resulting constant columns are removed by the variance
+    filter.
     """
-    calc = MordredCalc(mordred_desc, ignore_3D=True)
+    calc = MordredCalc(mordred_desc, ignore_3D=False)
     mols = [mol_from_smiles(smi) for smi in smiles_list]
     df = calc.pandas(mols, quiet=True)
     # Keep column names for downstream variance/correlation filtering
@@ -353,6 +396,10 @@ def preprocess_features(
         X = X[:, :n_keep]
         print(f"    after PCA          : {X.shape}  "
               f"({cumvar[n_keep-1]*100:.1f} % variance retained)")
+        if cumvar[n_keep - 1] < CONFIG["pca_explained_variance"]:
+            print(f"    [NOTE] {CONFIG['pca_max_components']}-component cap reached: "
+                  f"only {cumvar[n_keep-1]*100:.1f} % of variance retained "
+                  f"(target {CONFIG['pca_explained_variance']*100:.0f} %).")
 
     return X.astype(np.float32)
 
@@ -377,25 +424,25 @@ FINGERPRINT_REGISTRY: dict = {
         "drop_cols": ["SMILES", "PCE"],
     },
     "Morgan": {
-        "fn": lambda s: compute_morgan(s, CONFIG["morgan_radius"], CONFIG["morgan_n_bits"]),
+        "fn": lambda s: compute_morgan(s, CONFIG["morgan_radius"], CONFIG["morgan_n_bits"]),  # radius 1
         "corr_filter": False,
         "csv_file": "morgan_combined_df.csv",
         "drop_cols": ["SMILES", "PCE"],
     },
     "APF": {
-        "fn": lambda s: compute_atom_pair_fp(s, CONFIG["fp_n_bits"]),
+        "fn": lambda s: compute_atom_pair_fp(s, CONFIG["apf_n_bits"]),
         "corr_filter": False,
         "csv_file": "apf_combined.csv",
         "drop_cols": ["SMILES", "PCE"],
     },
     "PF": {
-        "fn": lambda s: compute_path_fp(s, CONFIG["fp_n_bits"]),
+        "fn": lambda s: compute_pattern_fp(s, CONFIG["pf_n_bits"]),
         "corr_filter": False,
         "csv_file": "pf_combined_df.csv",
         "drop_cols": ["SMILES", "PCE"],
     },
     "Extended": {
-        "fn": lambda s: compute_extended_fp(s, radius=3, n_bits=CONFIG["fp_n_bits"]),
+        "fn": lambda s: compute_extended_fp(s, CONFIG["extended_radius"], CONFIG["extended_n_bits"]),
         "corr_filter": False,
         "csv_file": "extended_combined_df.csv",
         "drop_cols": ["SMILES", "PCE"],
@@ -419,7 +466,7 @@ FINGERPRINT_REGISTRY: dict = {
 # SECTION 7 – SURROGATE MODEL & ACQUISITION FUNCTION
 # ==============================================================================
 
-def build_gpr() -> GaussianProcessRegressor:
+def build_gpr(random_state=None) -> GaussianProcessRegressor:
     """
     GPR with Constant × RBF + White noise kernel.
     normalize_y=True improves numerical conditioning on PCE targets.
@@ -434,6 +481,7 @@ def build_gpr() -> GaussianProcessRegressor:
         n_restarts_optimizer=CONFIG["gpr_n_restarts"],
         normalize_y=True,
         alpha=CONFIG["gpr_alpha"],
+        random_state=random_state,
     )
 
 
@@ -519,6 +567,9 @@ def run_gpr_al_loop(
     calibration_curve = []
     best_pce_curve    = []
     random_discovery  = []
+    kernel_log        = []   # fitted [constant, length_scale, noise_level] per iteration
+    gpr_seed = (None if CONFIG["gpr_random_state"] is None
+                else int(CONFIG["gpr_random_state"]) + seed)
 
     for itr in range(CONFIG["n_iterations"]):
         X_train = X_full[labeled]
@@ -527,10 +578,11 @@ def run_gpr_al_loop(
         y_pool  = y_full[unlabeled]
 
         # ---- Train GPR ----
-        gpr = build_gpr()
+        gpr = build_gpr(random_state=gpr_seed)
         try:
             gpr.fit(X_train, y_train)
             mu_pool, sigma_pool = gpr.predict(X_pool, return_std=True)
+            kernel_log.append(np.exp(gpr.kernel_.theta).tolist())
         except Exception as exc:
             # Fallback to random selection if GPR fails (rare with PCA preprocessing)
             if verbose:
@@ -540,6 +592,7 @@ def run_gpr_al_loop(
             labeled.append(chosen_global)
             discovery_curve.append(top_k_mask[labeled].sum() / n_top)
             calibration_curve.append(np.nan)
+            kernel_log.append([np.nan, np.nan, np.nan])
             best_pce_curve.append(float(y_full[labeled].max()))
             rand_global = rand_unlabeled.pop(int(rng_rand.integers(len(rand_unlabeled))))
             rand_labeled.append(rand_global)
@@ -568,12 +621,15 @@ def run_gpr_al_loop(
             print(f"    [{rep_name}] seed={seed} iter={itr+1:3d} | "
                   f"top-K found: {pct:.1f}% | best PCE: {best_pce_curve[-1]:.2f}%")
 
-    return {
+    out = {
         "discovery_curve":   discovery_curve,
         "calibration_curve": calibration_curve,
         "best_pce_curve":    best_pce_curve,
         "random_discovery":  random_discovery,
     }
+    if CONFIG["log_gpr_kernel"]:
+        out["gpr_kernel_params"] = kernel_log
+    return out
 
 
 # ==============================================================================
@@ -762,154 +818,34 @@ def run_gcn_al_loop(
 # SECTION 10 – RESULTS: SAVING, PLOTTING, SUMMARY TABLE
 # ==============================================================================
 
+def _jsonable(v):
+    """Convert (nested) lists / numpy scalars to plain floats for JSON."""
+    if isinstance(v, (list, tuple, np.ndarray)):
+        return [_jsonable(x) for x in v]
+    if isinstance(v, (np.floating, np.integer, float, int)):
+        return float(v)
+    return v
+
+
 def save_results(all_results: dict, results_dir: Path):
     out = {}
     for rep, seeds_data in all_results.items():
         out[rep] = {}
         for seed, data in seeds_data.items():
-            out[rep][str(seed)] = {
-                k: [float(v) for v in vals] if isinstance(vals, list) else vals
-                for k, vals in data.items()
-            }
+            out[rep][str(seed)] = {k: _jsonable(vals) for k, vals in data.items()}
     path = results_dir / "al_results.json"
     with open(path, "w") as f:
         json.dump(out, f, indent=2)
     print(f"\nResults saved → {path}")
 
 
-def plot_discovery_curves(all_results: dict, results_dir: Path):
-    """Save two separate figures: discovery rate, and best PCE found vs oracle calls."""
-    colors = plt.cm.tab10.colors
-    iters = np.arange(1, CONFIG["n_iterations"] + 1)
-
-    rep_names = list(all_results.keys())
-
-    # ===== Figure 1: mean discovery curves =====
-    fig, ax = plt.subplots(figsize=(7, 5))
-    random_plotted = False
-
-    for idx, rep in enumerate(rep_names):
-        seeds_data = all_results[rep]
-        color = colors[idx % len(colors)]
-
-        dc_all = np.array([
-            v["discovery_curve"] for v in seeds_data.values()
-            if "discovery_curve" in v and len(v["discovery_curve"]) == CONFIG["n_iterations"]
-        ])
-        if dc_all.size:
-            mu, sd = dc_all.mean(0), dc_all.std(0)
-            ax.plot(iters, mu, label=rep, color=color, lw=1.8)
-            ax.fill_between(iters, mu - sd, mu + sd, alpha=0.12, color=color)
-
-        # -- Random baseline (plot once from first rep that has it) --
-        if not random_plotted:
-            rd_all = np.array([
-                v["random_discovery"] for v in seeds_data.values()
-                if "random_discovery" in v and len(v["random_discovery"]) == CONFIG["n_iterations"]
-            ])
-            if rd_all.size:
-                mu_r, sd_r = rd_all.mean(0), rd_all.std(0)
-                ax.plot(iters, mu_r, "k--", label="Random", lw=1.5)
-                ax.fill_between(iters, mu_r - sd_r, mu_r + sd_r, alpha=0.08, color="k")
-                random_plotted = True
-
-    ax.set_xlabel("Oracle Calls (Active Learning Iterations)", fontsize=9)
-    ax.set_ylabel("Fraction of Top-10% Molecules Discovered", fontsize=9)
-    ax.set_title("Discovery Curves — Molecular Representation Benchmark", fontsize=11)
-    ax.legend(fontsize=8, loc="upper right")
-    ax.set_xlim(0, CONFIG["n_iterations"])
-    #### ax.grid(True, alpha=0.25)
-    ax.set_ylim(0, 1.0)
-    ax.axhline(y=1.0, color="gray", ls=":", lw=1)
-
-    plt.tight_layout()
-    path = results_dir / "figures" / "mean_discovery_curves.png"
-    plt.savefig(path, dpi=PLOT_DPI, format=PLOT_FORMAT, bbox_inches="tight")
-    plt.close()
-    print(f"Discovery plot saved → {path}")
-
-    # ===== Figure 2: mean best PCE discovered =====
-    fig, ax = plt.subplots(figsize=(7, 5))
-
-    for idx, rep in enumerate(rep_names):
-        seeds_data = all_results[rep]
-        color = colors[idx % len(colors)]
-
-        bp_all = np.array([
-            v["best_pce_curve"] for v in seeds_data.values()
-            if "best_pce_curve" in v and len(v["best_pce_curve"]) == CONFIG["n_iterations"]
-        ])
-        if bp_all.size:
-            mu, sd = bp_all.mean(0), bp_all.std(0)
-            ax.plot(iters, mu, label=rep, color=color, lw=1.8)
-            ax.fill_between(iters, mu - sd, mu + sd, alpha=0.12, color=color)
-
-    ax.set_xlabel("Oracle Calls (Active Learning Iterations)", fontsize=9)
-    ax.set_ylabel("Best PCE Found (%)", fontsize=9)
-    ax.set_title("Best PCE Discovered vs. Oracle Calls", fontsize=11)
-    ax.legend(fontsize=8, loc="lower right")
-    ax.set_xlim(0, CONFIG["n_iterations"])
-    #### ax.grid(True, alpha=0.25)
-
-    plt.tight_layout()
-    path = results_dir / "figures" / "mean_best_pce_discovered.png"
-    plt.savefig(path, dpi=PLOT_DPI, format=PLOT_FORMAT, bbox_inches="tight")
-    plt.close()
-    print(f"Best-PCE plot saved → {path}")
+# Figures are produced by src/make_figures.py (also usable stand-alone from
+# results/al_results.json). Labels use "high-efficiency pool (PCE > 12 %)";
+# NLPD is plotted as mean and median over seeds on a log axis.
+import make_figures  # noqa: E402  (same directory as this script)
 
 
-def plot_calibration_curves(all_results: dict, results_dir: Path):
-    """Mean NLPD (surrogate calibration) vs iteration for each representation."""
-    fig, ax = plt.subplots(figsize=(8, 5))
-    colors = plt.cm.tab10.colors
-    iters = np.arange(1, CONFIG["n_iterations"] + 1)
-
-    for idx, (rep, seeds_data) in enumerate(all_results.items()):
-        cal_all = []
-        for v in seeds_data.values():
-            cc = v.get("calibration_curve", [])
-            if len(cc) == CONFIG["n_iterations"]:
-                clean = [x if (x is not None and not np.isnan(x)) else np.nan for x in cc]
-                cal_all.append(clean)
-
-        if not cal_all:
-            continue
-
-        arr = np.array(cal_all, dtype=float)
-        mu  = np.nanmean(arr, axis=0)
-        sd  = np.nanstd(arr, axis=0)
-        color = colors[idx % len(colors)]
-        ax.plot(iters, mu, label=rep, color=color, lw=1.8)
-        ax.fill_between(iters, mu - sd, mu + sd, alpha=0.12, color=color)
-
-    ax.set_xlabel("Oracle Calls", fontsize=9)
-    ax.set_ylabel("Mean NLPD (lower = better calibration)", fontsize=9)
-    ax.set_title("Surrogate Calibration over Active Learning Iterations", fontsize=11)
-    ax.legend(fontsize=9)
-    #### ax.grid(True, alpha=0.25)
-    plt.tight_layout()
-    path = results_dir / "figures" / "calibration_curves.png"
-    plt.savefig(path, dpi=PLOT_DPI, format=PLOT_FORMAT, bbox_inches="tight")
-    plt.close()
-    print(f"Calibration plot saved → {path}")
-
-
-def plot_pce_histogram(y_full: np.ndarray, results_dir: Path):
-    """PCE distribution plot for Figure 1 in the paper."""
-    fig, ax = plt.subplots(figsize=(7, 4))
-    ax.hist(y_full, bins=40, color="steelblue", edgecolor="white", linewidth=0.5)
-    ax.axvline(CONFIG["top_k_threshold"], color="crimson", ls="--", lw=1.8,
-               label=f"Top-10% threshold (PCE > {CONFIG['top_k_threshold']}%)")
-    ax.set_xlabel("Power Conversion Efficiency, PCE (%)", fontsize=11)
-    ax.set_ylabel("Number of Molecules", fontsize=11)
-    ax.set_title("Distribution of PCE Values in the 1 481-Molecule Dataset", fontsize=11)
-    ax.legend(fontsize=9)
-    #### ax.grid(True, alpha=0.25)
-    plt.tight_layout()
-    path = results_dir / "figures" / "pce_histogram.png"
-    plt.savefig(path, dpi=PLOT_DPI, format=PLOT_FORMAT, bbox_inches="tight")
-    plt.close()
-    print(f"PCE histogram saved → {path}")
+_trapz = getattr(np, "trapezoid", None) or getattr(np, "trapz")  # NumPy 1.x / 2.x
 
 
 def print_summary_table(all_results: dict):
@@ -926,7 +862,7 @@ def print_summary_table(all_results: dict):
             if len(dc) >= 50:
                 hits50.append(dc[49])
             if dc:
-                aucs.append(np.trapz(dc) / len(dc))
+                aucs.append(_trapz(dc) / len(dc))
 
         h_mu = np.mean(hits50) if hits50 else float("nan")
         h_sd = np.std(hits50)  if hits50 else float("nan")
@@ -967,11 +903,12 @@ def main():
     print(f"  Molecules     : {len(df)}")
     print(f"  PCE range     : {y_full.min():.2f} – {y_full.max():.2f} %")
     print(f"  Mean ± std    : {y_full.mean():.2f} ± {y_full.std():.2f} %")
-    print(f"  Top-K (> {CONFIG['top_k_threshold']}%): "
+    print(f"  High-efficiency pool (PCE > {CONFIG['top_k_threshold']}%): "
           f"{top_k_mask.sum()} molecules ({100*top_k_mask.mean():.1f} %)")
 
     # Generate PCE histogram (Figure 1)
-    plot_pce_histogram(y_full, results_dir)
+    (results_dir / "figures").mkdir(parents=True, exist_ok=True)
+    make_figures.plot_histogram(np.asarray(y_full, dtype=float), results_dir / "figures")
 
     # ------------------------------------------------------------------
     # 11.2  Compute / load all fingerprint arrays
@@ -1079,8 +1016,11 @@ def main():
     print("=" * 65)
 
     save_results(all_results, results_dir)
-    plot_discovery_curves(all_results, results_dir)
-    plot_calibration_curves(all_results, results_dir)
+    fig_dir = results_dir / "figures"
+    make_figures.plot_discovery(all_results, fig_dir)
+    make_figures.plot_best_pce(all_results, fig_dir)
+    make_figures.plot_calibration(all_results, fig_dir)
+    make_figures.plot_nlpd_per_seed(all_results, fig_dir)
     print_summary_table(all_results)
 
     print(f"\nAll experiments complete.")

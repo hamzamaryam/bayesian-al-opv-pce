@@ -1,163 +1,159 @@
-# Benchmarking Molecular Representations in Bayesian Active Learning for Accelerated Discovery of High-Efficiency Organic Solar Cells
+# Circular fingerprints outpace learned graph representations in active-learning discovery of organic semiconductor materials
+
+Code, data and results for the article of the same title (H. Siddiqui, *ACS Omega*, manuscript ao-2026-11833c, under revision).
 
 ## Overview
 
-This repository contains the code, data, and results accompanying the paper 'Benchmarking Molecular Representations in Bayesian Active Learning for Accelerated Discovery of High-Efficiency Organic Solar Cells'. It benchmarks eight handcrafted molecular representations (RDKit descriptors, Mordred descriptors, MACCS keys, Avalon fingerprints, Morgan circular fingerprints, atom-pair fingerprints, path-based fingerprints, and extended fingerprints) plus a graph convolutional network (GCN) baseline within a standardized Bayesian active learning (AL) loop — a Gaussian process regressor (GPR) surrogate with an Expected Improvement (EI) acquisition function — for discovering high-power-conversion-efficiency (PCE) non-fullerene-acceptor (NFA) organic solar cell (OSC) molecules. The core problem addressed is: given a fixed pool of 1,481 candidate molecules with known PCE, which molecular representation lets an AL agent recover the highest-efficiency candidates in the fewest oracle queries?
+This repository benchmarks how the **molecular representation** affects pool-based Bayesian active learning (AL) for discovering high power-conversion-efficiency (PCE) organic solar cell (OSC) molecules. Given a fixed pool of 1,481 molecules with known PCE, which representation lets an AL agent recover high-efficiency candidates in the fewest oracle queries?
+
+* **Eight handcrafted representations** (table below) are each coupled to the **same** Gaussian process regressor (GPR; Constant × RBF + White kernel) and the **same** Expected Improvement (EI) acquisition function.
+* A **graph convolutional network (GCN) baseline** is evaluated with the same EI formula, exploration parameter, initial seed sets and query budget, but it does **not** use a GPR and its embeddings are **not** passed to a GPR. The GCN is trained end-to-end on the labeled molecules, and its predictive mean and uncertainty come from **MC-Dropout** (15 stochastic forward passes).
+* The **high-efficiency pool** is every molecule with PCE > 12 %: **370 of 1,481 molecules (25.0 %)**. Earlier versions of the code and manuscript called this pool "top-10 %"; that label was wrong, because the 90th percentile of PCE is 14.3 %.
+
+## Representations actually used
+
+These settings are those of the precomputed matrices in `data/features/`, which produced every reported result. `src/verify_features.py` regenerates them from SMILES and checks them against the cache. The output is in `results/feature_provenance.json`.
+
+| Name in paper/code | What it is | Generator (RDKit 2024.03.5) | Raw dim. | GPR input dim. (PCA variance retained) |
+|---|---|---|---|---|
+| RDKit | 2-D descriptors, explicit H | `MolecularDescriptorCalculator(Descriptors._descList)` on `Chem.AddHs(mol)` | 210 | 32 (95.5 %) |
+| Mordred | descriptors | `mordred.Calculator(descriptors, ignore_3D=False)`, no conformers (3-D → missing → removed) | 1,826 | 41 (95.2 %) |
+| MACCS | substructure keys | `MACCSkeys.GenMACCSKeys` | 167 | 18 (no PCA) |
+| Avalon | **hashed substructure** FP (not circular) | `pyAvalonTools.GetAvalonFP(mol, nBits=512)` | 512 | 50 (**81.8 %**) |
+| Morgan | circular, **radius 1** (ECFP2-type) | `GetMorganFingerprintAsBitVect(mol, radius=1, nBits=2048)` | 2,048 | 26 (95.0 %) |
+| Extended | circular, **radius 2** (ECFP4-type) | `GetMorganFingerprintAsBitVect(mol, radius=2, nBits=2048)` | 2,048 | 50 (95.2 %) |
+| APF | atom pairs | `rdFingerprintGenerator.GetAtomPairGenerator(fpSize=4096)` | **4,096** | 50 (**69.1 %**) |
+| PF | **pattern** (SMARTS substructure-screening) FP, not path-based | `Chem.rdmolops.PatternFingerprint(mol)` | 2,048 | 50 (**87.9 %**) |
+
+**Preprocessing**, identical for all eight representations:
+
+1. Coerce to numeric; NaN and inf become 0.
+2. Remove features with variance < 0.10.
+3. Remove one of each pair with |r| > 0.80, only when ≤ 300 features remain (RDKit, MACCS).
+4. Standardise.
+5. Apply PCA to 95 % variance, **capped at 50 components**.
+
+Because of the cap, APF, Avalon and PF retain less than 95 % of their variance. All of these steps are unsupervised and are fitted once on the whole pool.
 
 ## Repository structure
 
 ```
 .
+├── config/
+│   └── benchmark_config.json          # Machine-readable parameters (loaded by the main script)
 ├── data/
-│   ├── raw/                               # Original literature-assembled source tables
-│   │   ├── First_Database.csv             # Raw donor/acceptor PCE records
-│   │   └── train_test_combine.csv         # Second raw SMILES/PCE source
-│   ├── processed/                         # Curated dataset used by the pipeline
-│   │   ├── Combined_df.csv                # Main dataset: 1,481 molecules, columns [SMILES, PCE]
-│   │   └── combined_df.smi                # Same molecules as a plain SMILES list
-│   ├── features/                          # Precomputed descriptor / fingerprint matrices (row order = Combined_df.csv)
-│   │   ├── rdkit_combined_df.csv          # RDKit descriptors
-│   │   ├── mordred_combined_df.csv        # Mordred descriptors
-│   │   ├── maccs_combined_df.csv          # MACCS keys
-│   │   ├── morgan_combined_df.csv         # Morgan circular fingerprints
-│   │   ├── avalon_combined.csv            # Avalon fingerprints
-│   │   ├── apf_combined.csv               # Atom-pair fingerprints
-│   │   ├── pf_combined_df.csv             # Path-based fingerprints
-│   │   ├── extended_combined_df.csv       # Extended fingerprints
-│   │   ├── rdk_fingerprint_combined.csv   # RDKit topological fingerprint (notebook only)
-│   │   ├── ttf_combined.csv               # Legacy combined export (not read by the main script)
-│   │   └── padel_legacy/                  # Legacy PaDEL-generated exports (not read by the main script)
-│   └── padel_descriptor_xml/              # PaDEL-Descriptor definition files (*.xml, descriptors_xml.zip)
-│
-├── src/                                   # Pipeline scripts (run from anywhere; paths resolve to the repo root)
-│   ├── active_learning_benchmark_700dpi.py   # Main pipeline — produced the committed results/
-│   ├── active_learning_benchmark.py          # Earlier variant (combined 2-panel figure layout)
-│   ├── make_supplementary_movies_revised.py  # Generates the three supplementary .mp4 movies
-│   └── make_supplementary_movies.py          # Earlier/unused movie-generation script
-│
+│   ├── raw/
+│   │   ├── First_Database.csv         # 1,558 donor:acceptor device records (320 donors, 763 acceptors) with literature reference ("Ref.")
+│   │   └── train_test_combine.csv     # 944 molecule–PCE records (912 unique SMILES)
+│   ├── processed/
+│   │   ├── Combined_df.csv            # 1,481 molecules: [index, SMILES, PCE]
+│   │   └── combined_df.smi
+│   ├── features/                      # Precomputed feature matrices used for the paper (row order = Combined_df.csv)
+│   │   └── padel_legacy/, ttf_combined.csv, rdk_fingerprint_combined.csv   # not used by the main script
+│   └── padel_descriptor_xml/
+├── src/
+│   ├── active_learning_benchmark_700dpi.py   # MAIN PIPELINE – produced results/
+│   ├── make_figures.py                       # Re-draws all figures from results/al_results.json (no AL re-run)
+│   ├── make_supplementary_movies_revised.py  # Supplementary movies S1–S3
+│   ├── verify_features.py                    # Feature provenance / cache audit
+│   └── legacy/                               # Superseded scripts (kept for audit, not used)
 ├── notebooks/
 │   ├── Active_Learning_Data_Generation.ipynb # Builds Combined_df.csv and all feature matrices
-│   └── exploratory/                          # Single-representation prototypes (kept for audit)
-│       ├── Active_Learning_Rdkit*.ipynb, Active_Learning_Mordred.ipynb
-│       ├── Active_Learning_{maccs,avalon,apf,pf,extended,rdk}_fingerprint.ipynb
-│       ├── Graph_Active_Learning.ipynb       # GCN baseline prototype
-│       └── HBE_BayesOpt.ipynb                # Bayesian-optimization scratch notebook
-│
-├── results/                               # All pipeline outputs (committed for inspection)
-│   ├── al_results.json                    # Raw per-representation, per-seed curves
-│   ├── supplementary_dataset.csv          # Per-molecule PCE values used for Movie 1
-│   ├── figures/                           # pce_histogram, mean_discovery_curves, mean_best_pce_discovered, calibration_curves (.png)
-│   ├── movies/                            # figure1/2/3 *_movie.mp4 supplementary animations
-│   └── fp_cache/                          # Cached preprocessed feature matrices (.npy), one per representation
-│
-├── docs/
-│   ├── paper_draft.md                     # Manuscript draft
-│   ├── literature/                        # Scopus literature-search exports used for the review
-│   └── references/                        # Key reference PDF (Abroshan et al., Front. Chem. 2021)
-│
-├── environment.yml                        # Conda environment
-├── LICENSE                                # MIT License
-└── README.md
+│   └── exploratory/                          # Single-representation prototypes (audit only; settings may differ)
+├── results/
+│   ├── al_results.json                # Per-representation, per-seed curves (the paper's results)
+│   ├── feature_provenance.json        # Output of src/verify_features.py
+│   ├── figures/, movies/, fp_cache/
+│   └── supplementary_dataset.csv
+├── docs/literature/, docs/references/
+├── environment.yml
+└── LICENSE
 ```
+
+## Dataset construction (`notebooks/Active_Learning_Data_Generation.ipynb`)
+
+1. **`train_test_combine.csv`** (944 records). Rows with an identical SMILES string are collapsed into the row with the **highest PCE**, leaving 912.
+2. **`First_Database.csv`** (1,558 donor:acceptor device records). The **acceptor** SMILES and the device PCE are kept. Rows with an identical acceptor SMILES are collapsed into the **highest PCE** over all donors and devices, leaving 763.
+3. The two tables are concatenated (1,675 rows), and every SMILES is converted to **RDKit canonical** form. This reveals 194 duplicate structures, which are again collapsed into the **highest PCE**, leaving **1,481** unique molecules.
+
+Each molecule's label is therefore the **best PCE reported for any device containing it**. It is not an average, and it does not encode the donor partner or the processing conditions.
+
+> **TODO (author):** cite the original publication or database from which `train_test_combine.csv` was compiled. `First_Database.csv` already records a reference for each device.
 
 ## Installation
 
-Tested on Ubuntu with Python 3.10+ (developed with Python 3.12). A Conda environment is provided (`conda env create -f environment.yml`); alternatively, the pip commands below install the packages actually imported by the code.
+Developed with Python 3.12.5. Key versions: RDKit 2024.03.5, Mordred 1.2.0, scikit-learn 1.5.1, NumPy 1.26.4, SciPy 1.14.1, pandas 2.2.2, PyTorch 2.4.1, PyTorch Geometric 2.6.0, Matplotlib 3.9.2. See `environment.yml`.
 
 ```bash
-# 1. Clone the repository
-git clone <REPO_URL> pce-al-benchmark
-cd pce-al-benchmark
-
-# 2. Create and activate a virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-
-# 3. Install core dependencies
-pip install numpy pandas scipy scikit-learn matplotlib seaborn tqdm networkx
-
-# 4. Install cheminformatics dependencies
-pip install rdkit mordred
-
-# 5. Install PyTorch + PyTorch Geometric (CPU build shown; swap the index URL for a CUDA build if you have a GPU)
-pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install torch_geometric
-
-# 6. Install dependencies for the supplementary movies (optional)
-pip install imageio imageio-ffmpeg
-
-# 7. Only needed if you plan to re-run the exploratory PaDEL-based notebooks
-pip install padelpy jupyter
+git clone https://github.com/hamzamaryam/bayesian-al-opv-pce.git
+cd bayesian-al-opv-pce
+conda env create -f environment.yml
+conda activate active_learning
 ```
 
-## Data
+A minimal pip alternative:
 
-- **`data/processed/Combined_df.csv`** — the dataset used directly by the pipeline. 1,481 rows, columns `SMILES` (molecular structure) and `PCE` (experimentally measured power conversion efficiency, %), range 0.01%–18.38%. This is the file `active_learning_benchmark_700dpi.py` loads at startup (`CONFIG["data_file"]`).
-- **`data/processed/combined_df.smi`** — the same 1,481 molecules as a plain-text SMILES list.
-- **`data/raw/First_Database.csv`** and **`data/raw/train_test_combine.csv`** — the two raw, literature-assembled source tables (donor/acceptor SMILES with measured PCE) that `notebooks/Active_Learning_Data_Generation.ipynb` deduplicates, canonicalizes, and concatenates to produce `Combined_df.csv`. Both are included in the repo, so no external download is required to reproduce `Combined_df.csv` from scratch.
-- **Precomputed descriptor/fingerprint CSVs** in `data/features/` (`rdkit_combined_df.csv`, `mordred_combined_df.csv`, `maccs_combined_df.csv`, `morgan_combined_df.csv`, `avalon_combined.csv`, `apf_combined.csv`, `pf_combined_df.csv`, `extended_combined_df.csv`) — one row per molecule in `Combined_df.csv`, in the same order, with per-representation feature columns. The main script loads these on first run and caches the preprocessed arrays to `results/fp_cache/*.npy`; if a cache/CSV is missing it recomputes the representation directly from SMILES with RDKit/Mordred.
-- The exact original literature sources (papers/databases) from which `First_Database.csv` and `train_test_combine.csv` were assembled are not recorded in the code: `<DATASET SOURCE / DOI>`.
+```bash
+pip install numpy==1.26.4 pandas==2.2.2 scipy==1.14.1 scikit-learn==1.5.1 matplotlib==3.9.2 rdkit==2024.3.5 mordred==1.2.0
+pip install torch==2.4.1 torch_geometric==2.6.0
+pip install imageio imageio-ffmpeg   # optional: supplementary movies
+```
 
-## Running the pipeline end-to-end
+## Reproducing the paper
 
-1. **(Optional — only if regenerating the dataset from raw sources)** Run `notebooks/Active_Learning_Data_Generation.ipynb` top to bottom (from inside `notebooks/`). Reads `First_Database.csv` and `train_test_combine.csv`, deduplicates by canonical SMILES (keeping the highest PCE per molecule), and writes `Combined_df.csv`. Skip this step if you only want to reproduce the paper's results, since `Combined_df.csv` is already committed.
-2. **Run the main benchmark:**
+1. **Benchmark** (8 representations × 5 seeds × 100 iterations, plus the GCN):
+
    ```bash
    python src/active_learning_benchmark_700dpi.py
    ```
-   Loads `Combined_df.csv`; computes (or loads from `data/features/` / `results/fp_cache/*.npy`) all eight fingerprint/descriptor representations; runs the GPR + EI active learning loop for each representation across 5 random seeds × 100 iterations from a 10-molecule seed set; trains the GCN + MC-Dropout + EI baseline across the same 5 seeds × 100 iterations; saves numeric results to `results/` and figures to `results/figures/`. This is the script that produced the results currently committed in `results/` (`active_learning_benchmark.py` is an earlier variant that writes a combined two-panel `discovery_curves.png` instead).
-3. **(Optional) Generate the supplementary movies:**
+
+   Parameters are read from `config/benchmark_config.json`. The seeds are {0, 1, 2, 3, 4}, and the same initial sets are used for every representation, the GCN and the random baseline. The script writes `results/al_results.json` (it now also stores the fitted GPR hyperparameters per iteration) and the figures. `gpr_random_state` is `null` by default, which reproduces the paper's unseeded optimizer restarts. Set it to an integer for bit-reproducible reruns.
+
+2. **Figures only**, from the stored results with no AL re-run:
+
    ```bash
-   python src/make_supplementary_movies_revised.py \
-       --json results/al_results.json \
-       --dataset results/supplementary_dataset.csv \
-       --outdir results/movies
+   python src/make_figures.py
    ```
-   Requires `results/al_results.json` (produced in step 2) and `results/supplementary_dataset.csv` (already committed). Produces the three `.mp4` animations under `results/movies/`.
 
-The exploratory notebooks in `notebooks/exploratory/` (`Active_Learning_Rdkit*.ipynb`, `Active_Learning_*_fingerprint.ipynb`, `Active_Learning_Mordred.ipynb`, `Graph_Active_Learning.ipynb`, `HBE_BayesOpt.ipynb`) are single-representation prototypes that were consolidated and fixed up into `src/active_learning_benchmark_700dpi.py` (see the "Issues addressed vs. individual notebooks" section in that script's docstring). They are not required to reproduce the paper's results and are kept for audit purposes only.
+   This produces Figure 1 (`pce_histogram`), Figure 2 (`mean_discovery_curves`), Figure 3 (`mean_best_pce_discovered`), Figure 4 (`calibration_curves`: mean and median NLPD over seeds, log axis) and Figure S2 (`nlpd_per_seed`).
 
-## Expected outputs
+3. **Supplementary movies**:
 
-A successful run of `src/active_learning_benchmark_700dpi.py` writes the following to `results/`:
+   ```bash
+   python src/make_supplementary_movies_revised.py --json results/al_results.json --dataset results/supplementary_dataset.csv --outdir results/movies
+   ```
 
-- `figures/pce_histogram.png` — Figure 1: PCE distribution across the 1,481-molecule dataset.
-- `figures/mean_discovery_curves.png` — Figure 2: mean ± SD fraction of the top-10% PCE pool recovered vs. AL iteration, per representation, with a random-selection baseline.
-- `figures/mean_best_pce_discovered.png` — Figure 3: mean ± SD best PCE found vs. oracle calls, per representation.
-- `figures/calibration_curves.png` — GPR predictive-uncertainty calibration diagnostic, per representation.
-- `al_results.json` — raw per-representation, per-seed arrays (`discovery_curve`, `best_pce_curve`, `calibration_curve`, `random_discovery`), each of length 100 (one value per AL iteration).
-- `fp_cache/*.npy` — cached preprocessed feature matrices, one file per representation (`APF`, `Avalon`, `Extended`, `MACCS`, `Mordred`, `Morgan`, `PF`, `RDKit`).
-- A console summary table (printed at the end of the run) ranking representations by final discovery performance.
+4. **Feature audit**:
 
-Running `src/make_supplementary_movies_revised.py` additionally produces `figure1_pce_histogram_movie.mp4`, `figure2_discovery_curve_movie.mp4`, and `figure3_best_pce_movie.mp4` in the target `--outdir` (committed copies are in `results/movies/`).
+   ```bash
+   python src/verify_features.py
+   ```
 
-## Requirements
+## Notes for interpreting the results
 
-- **Hardware:** CPU-only is sufficient — the GPR surrogate (scikit-learn) and the GCN baseline (2 graph-convolution layers, hidden dim 64, 60 epochs, batch size 32) are both small enough to train on CPU; a GPU will speed up the GCN portion but is not required.
-- **RAM:** Mordred computes ~1,800 descriptors per molecule before PCA reduction (capped at 50 components / 95% explained variance in `CONFIG`), which is the most memory-intensive step. `<RAM REQUIREMENT — fill in based on your test run, e.g. "peak ~X GB observed on my machine">`.
-- **Runtime:** The full run repeats the AL loop for 8 representations × 5 seeds × 100 iterations, plus the GCN baseline × 5 seeds × 100 iterations, with GPR retrained from scratch at every iteration. First run is slower because uncached representations (especially Mordred) are computed from SMILES and written to `results/fp_cache/`; subsequent runs reuse the cache. `<APPROXIMATE TOTAL RUNTIME — fill in from your hardware, e.g. "~X hours on an N-core CPU">`.
+* **NLPD** is computed on the current unlabeled pool, and only for the GPR runs; it was not recorded for the GCN. The large mean NLPD of MACCS (until iteration 86) and Morgan (until iteration 51) comes from **one and two individual seeds**, not from a systematic early-iteration effect (see `results/figures/nlpd_per_seed.png`). These two representations have the fewest distinct feature vectors after preprocessing: 352 for MACCS and 960 for Morgan, out of 1,481.
+* **Discovery** is the fraction of the 370-molecule high-efficiency pool (PCE > 12 %) contained in the labeled set. **AUC** is the trapezoidal area under that curve divided by the number of iterations.
+
+## Hardware
+
+CPU-only is sufficient. The GPR is refitted on at most 110 points with at most 50 input dimensions. The GCN is small: 2 GCNConv layers of 64 units, 60 epochs, retrained at each iteration. The first run spends the most time computing uncached features, especially Mordred; later runs reuse `results/fp_cache/`.
 
 ## Citation
 
-If you use this code or dataset, please cite:
-
-<AUTHORS>, "<TITLE>," *<JOURNAL>*, <YEAR>. DOI: <DOI>
-
 ```bibtex
-@article{<CITEKEY>,
-  author  = {<AUTHORS>},
-  title   = {<TITLE>},
-  journal = {<JOURNAL>},
-  year    = {<YEAR>},
-  doi     = {<DOI>}
+@article{Siddiqui_AL_OSC,
+  author  = {Siddiqui, Hamza},
+  title   = {Circular fingerprints outpace learned graph representations in active-learning discovery of organic semiconductor materials},
+  journal = {ACS Omega},
+  note    = {Manuscript ao-2026-11833c, under revision},
+  year    = {2026}
 }
 ```
 
 ## License
 
-This code is released under the MIT License (see `LICENSE`).
+MIT (see `LICENSE`).
 
 ## Contact
 
-<YOUR NAME>, <AFFILIATION> — <EMAIL>
+Hamza Siddiqui, Solar Development Cell, Integral University, Lucknow, India (corresponding author of the article).

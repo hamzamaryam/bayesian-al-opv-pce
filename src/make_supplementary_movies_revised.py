@@ -17,7 +17,7 @@ representation (fingerprint) at a time**, cycling through all of them:
 
     Movie 2  ->  figure2_discovery_curve_movie.mp4
                  Animated version of Figure 2 (discovery curves).  The
-                 cumulative fraction of the top-10% PCE pool recovered is
+                 cumulative fraction of the high-efficiency pool (PCE > 12%) recovered is
                  drawn progressively over the 100 iterations, mean +/- SD
                  across the five seeds, with the random baseline shown for
                  reference.
@@ -103,7 +103,7 @@ FALLBACK_COLOR = "#000000"
 # 720p output:  12.8 in x 7.2 in @ 100 dpi  ->  1280 x 720 px
 FIG_W_IN, FIG_H_IN, FIG_DPI = 12.8, 7.2, 100
 
-TOP10_THRESHOLD = 12.0                # PCE (%) defining the top-10% pool
+TOP10_THRESHOLD = 12.0                # PCE (%) defining the high-efficiency pool (370 of 1,481 molecules, top 25%)
 
 # Defaults (overridable on the command line)
 DEFAULT_FPS        = 20               # frames per second in the output mp4
@@ -233,7 +233,7 @@ def render_movie1(results, dataset_csv, out_path, reps, fps, frame_step, hold):
             ax.axvspan(TOP10_THRESHOLD, x_hi, color="gold", alpha=0.12)
             ax.axvline(TOP10_THRESHOLD, color="0.45", ls=":", lw=1.4)
             ax.text(TOP10_THRESHOLD + 0.1, y_hi * 0.96,
-                    "top-10% pool (PCE > 12%)", fontsize=10,
+                    "high-efficiency pool (PCE > 12%)", fontsize=10,
                     color="0.35", va="top")
 
             # --- animated best-PCE-found marker ---
@@ -320,14 +320,14 @@ def render_movie2(results, out_path, reps, fps, frame_step, hold):
             ax.plot([x[t - 1]], [mean[t - 1]], marker="o", color=color,
                     markersize=8)
             ax.text(0.015, 0.97,
-                    f"discovered: {mean[t-1]*100:.1f}% of top-10% pool",
+                    f"discovered: {mean[t-1]*100:.1f}% of high-efficiency pool",
                     transform=ax.transAxes, va="top", fontsize=12,
                     color=color, fontweight="bold")
 
             ax.set_xlim(0, n_iter)
             ax.set_ylim(0.0, y_hi)
             ax.set_xlabel("Oracle Calls (Active Learning Iterations)", fontsize=13)
-            ax.set_ylabel("Fraction of Top-10% Molecules Discovered", fontsize=13)
+            ax.set_ylabel("Fraction of High-Efficiency Pool (PCE > 12%) Recovered", fontsize=13)
             ax.set_title(
                 f"Figure 2  |  Discovery curve -- {rep}   "
                 f"(iteration {t}/{n_iter})",

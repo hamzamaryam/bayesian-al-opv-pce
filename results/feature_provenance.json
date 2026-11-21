@@ -1,0 +1,88 @@
+{
+  "RDKit": {
+    "csv": "rdkit_combined_df.csv",
+    "raw_dim": 210,
+    "after_variance_filter": 127,
+    "after_correlation_filter": 63,
+    "components_for_full_target": 32,
+    "pca_variance_retained": 0.9552,
+    "gpr_input_dim": 32,
+    "distinct_inputs": 1459,
+    "cache_matches_csv_min_abs_r": 1.0
+  },
+  "MACCS": {
+    "csv": "maccs_combined_df.csv",
+    "regenerated_rows_identical": 1.0,
+    "raw_dim": 167,
+    "after_variance_filter": 42,
+    "after_correlation_filter": 18,
+    "gpr_input_dim": 18,
+    "distinct_inputs": 352,
+    "cache_matches_csv_min_abs_r": 1.0
+  },
+  "Morgan": {
+    "csv": "morgan_combined_df.csv",
+    "regenerated_rows_identical": 1.0,
+    "raw_dim": 2048,
+    "after_variance_filter": 53,
+    "components_for_full_target": 26,
+    "pca_variance_retained": 0.9504,
+    "gpr_input_dim": 26,
+    "distinct_inputs": 960,
+    "cache_matches_csv_min_abs_r": 1.0
+  },
+  "APF": {
+    "csv": "apf_combined.csv",
+    "regenerated_rows_identical": 0.998,
+    "raw_dim": 4096,
+    "after_variance_filter": 2263,
+    "components_for_full_target": 398,
+    "pca_variance_retained": 0.691,
+    "gpr_input_dim": 50,
+    "distinct_inputs": 1458,
+    "cache_matches_csv_min_abs_r": 1.0
+  },
+  "PF": {
+    "csv": "pf_combined_df.csv",
+    "regenerated_rows_identical": 1.0,
+    "raw_dim": 2048,
+    "after_variance_filter": 726,
+    "components_for_full_target": 126,
+    "pca_variance_retained": 0.8787,
+    "gpr_input_dim": 50,
+    "distinct_inputs": 1380,
+    "cache_matches_csv_min_abs_r": 1.0
+  },
+  "Extended": {
+    "csv": "extended_combined_df.csv",
+    "regenerated_rows_identical": 1.0,
+    "raw_dim": 2048,
+    "after_variance_filter": 123,
+    "components_for_full_target": 50,
+    "pca_variance_retained": 0.9516,
+    "gpr_input_dim": 50,
+    "distinct_inputs": 1267,
+    "cache_matches_csv_min_abs_r": 1.0
+  },
+  "Avalon": {
+    "csv": "avalon_combined.csv",
+    "regenerated_rows_identical": 0.9966,
+    "raw_dim": 512,
+    "after_variance_filter": 315,
+    "components_for_full_target": 139,
+    "pca_variance_retained": 0.818,
+    "gpr_input_dim": 50,
+    "distinct_inputs": 1261,
+    "cache_matches_csv_min_abs_r": 1.0
+  },
+  "Mordred": {
+    "csv": "mordred_combined_df.csv",
+    "raw_dim": 1826,
+    "after_variance_filter": 829,
+    "components_for_full_target": 41,
+    "pca_variance_retained": 0.9517,
+    "gpr_input_dim": 41,
+    "distinct_inputs": 1460,
+    "cache_matches_csv_min_abs_r": 1.0
+  }
+}

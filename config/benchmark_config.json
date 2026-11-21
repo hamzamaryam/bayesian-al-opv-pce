@@ -1,0 +1,55 @@
+{
+  "_description": "Parameters of the active-learning benchmark reported in the paper. Loaded by src/active_learning_benchmark_700dpi.py and overriding its CONFIG defaults. Paths are set in the script.",
+  "_representations": {
+    "RDKit": "210 RDKit 2-D descriptors, hydrogen-explicit molecules",
+    "Mordred": "1,826 Mordred descriptors (ignore_3D=False, no conformers -> 3-D descriptors missing -> removed by variance filter)",
+    "MACCS": "167 MACCS keys",
+    "Avalon": "pyAvalonTools.GetAvalonFP, 512 bits (hashed substructure; not circular)",
+    "Morgan": "Morgan radius 1 (ECFP2-type), 2048 bits",
+    "Extended": "Morgan radius 2 (ECFP4-type), 2048 bits",
+    "APF": "rdFingerprintGenerator.GetAtomPairGenerator(fpSize=4096)",
+    "PF": "Chem.rdmolops.PatternFingerprint, 2048 bits (SMARTS substructure patterns; not path-based)",
+    "GCN": "learned; trained end-to-end, MC-Dropout uncertainty, same EI / seeds / budget; no GPR"
+  },
+  "parameters": {
+    "top_k_threshold": 12.0,
+    "n_seed": 10,
+    "n_iterations": 100,
+    "n_random_seeds": 5,
+
+    "variance_threshold": 0.10,
+    "correlation_threshold": 0.80,
+    "pca_explained_variance": 0.95,
+    "pca_max_components": 50,
+
+    "gpr_n_restarts": 5,
+    "gpr_alpha": 1e-6,
+    "ei_jitter": 0.01,
+    "gpr_random_state": null,
+    "log_gpr_kernel": true,
+
+    "morgan_radius": 1,
+    "morgan_n_bits": 2048,
+    "extended_radius": 2,
+    "extended_n_bits": 2048,
+    "avalon_n_bits": 512,
+    "apf_n_bits": 4096,
+    "pf_n_bits": 2048,
+
+    "gcn_hidden_dim": 64,
+    "gcn_epochs": 60,
+    "gcn_batch_size": 32,
+    "gcn_lr": 0.01,
+    "gcn_mc_passes": 15,
+    "gcn_dropout": 0.20,
+
+    "global_seed": 42
+  },
+  "_notes": {
+    "random_seeds": "AL seeds are 0..n_random_seeds-1, i.e. {0,1,2,3,4}; the same initial sets are used for every representation, the GCN and the random baseline.",
+    "high_efficiency_pool": "PCE > 12 % = 370 of 1,481 molecules (25.0 %). Not a top-10 % pool (the 90th percentile is 14.3 %).",
+    "correlation_filter": "applied only when <= 300 features remain after the variance filter (RDKit, MACCS).",
+    "pca": "fitted on the whole pool (no labels); 95 % variance target capped at 50 components -> APF 69.1 %, Avalon 81.8 %, PF 87.9 % retained.",
+    "gcn_architecture": "2 GCNConv(64) + ReLU, global mean pool, Linear 64->32 (ReLU) -> 1, dropout 0.2; 19 node features (16-element one-hot, degree/10, formal charge/4, aromatic); no edge features."
+  }
+}
